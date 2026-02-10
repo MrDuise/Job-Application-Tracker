@@ -1,0 +1,55 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.db
+*.db-shm
+*.db-wal
+
+# NuGet
+*.nupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# Visual Studio
+.vs/
+*.csproj.user
+*.dbmdl
+*.jfm
+
+# Rider
+.idea/
+
+# Angular
+job-tracker-ui/node_modules/
+job-tracker-ui/dist/
+job-tracker-ui/.angular/
+job-tracker-ui/.sass-cache/
+
+# Environment
+*.env
+.env.*
+appsettings.*.local.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data Protection keys
+keys/
