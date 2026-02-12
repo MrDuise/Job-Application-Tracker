@@ -6,7 +6,7 @@ using MailKit.Search;
 using Microsoft.Extensions.Logging;
 using MimeKit;
 
-namespace JobTracker.Infrastructure.Services.Email;
+namespace JobTracker.Infrastructure.Services.MailKit;
 
 public class MailKitEmailService : IEmailService, IDisposable
 {
@@ -61,12 +61,12 @@ public class MailKitEmailService : IEmailService, IDisposable
         }
     }
 
-    public async Task<List<Core.Models.Email>> FetchNewEmailsAsync()
+    public async Task<List<Email>> FetchNewEmailsAsync()
     {
         return await FetchEmailsSinceAsync(DateTime.UtcNow.AddDays(-1));
     }
 
-    public async Task<List<Core.Models.Email>> FetchEmailsSinceAsync(DateTime since)
+    public async Task<List<Email>> FetchEmailsSinceAsync(DateTime since)
     {
         if (_client is null || !_client.IsConnected)
             await ConnectAsync();
@@ -77,7 +77,7 @@ public class MailKitEmailService : IEmailService, IDisposable
         var query = SearchQuery.DeliveredAfter(since);
         var uids = await inbox.SearchAsync(query);
 
-        var emails = new List<Core.Models.Email>();
+        var emails = new List<Email>();
         foreach (var uid in uids)
         {
             var message = await inbox.GetMessageAsync(uid);
@@ -88,7 +88,7 @@ public class MailKitEmailService : IEmailService, IDisposable
         return emails;
     }
 
-    public async Task<Core.Models.Email?> GetEmailByIdAsync(string emailId)
+    public async Task<Email?> GetEmailByIdAsync(string emailId)
     {
         if (_client is null || !_client.IsConnected)
             await ConnectAsync();
@@ -126,9 +126,9 @@ public class MailKitEmailService : IEmailService, IDisposable
         }
     }
 
-    private static Core.Models.Email ConvertToEmail(MimeMessage message, string uid)
+    private static Email ConvertToEmail(MimeMessage message, string uid)
     {
-        return new Core.Models.Email
+        return new Email
         {
             Id = uid,
             Subject = message.Subject ?? string.Empty,
