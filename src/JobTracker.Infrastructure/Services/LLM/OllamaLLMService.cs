@@ -42,7 +42,7 @@ public class OllamaLLMService : ILLMService
 
     private string BuildClassificationPrompt(string emailContent)
     {
-        return $"""
+        return $$"""
             Analyze this email and determine:
             1. Is this job application related? (true/false)
             2. Company name (extract from sender or body)
@@ -51,10 +51,10 @@ public class OllamaLLMService : ILLMService
             5. Any action items or deadlines
 
             Email Content:
-            {emailContent}
+            {{emailContent}}
 
             Respond ONLY with JSON in this format:
-            {{"isJobRelated": true, "companyName": "Company Name", "jobTitle": "Software Engineer", "status": "applied", "actionItems": []}}
+            {"isJobRelated": true, "companyName": "Company Name", "jobTitle": "Software Engineer", "status": "applied", "actionItems": []}
             """;
     }
 
