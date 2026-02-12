@@ -45,7 +45,10 @@ public class JobTrackerDbContext : DbContext
             entity.Property(ea => ea.EmailAddress).IsRequired().HasMaxLength(300);
             entity.Property(ea => ea.ImapServer).IsRequired().HasMaxLength(200);
             entity.Property(ea => ea.Username).IsRequired().HasMaxLength(200);
-            entity.Property(ea => ea.EncryptedPassword).IsRequired();
+            entity.Property(ea => ea.EncryptedPassword).IsRequired(false);
+            entity.Property(ea => ea.AuthType).HasConversion<string>().HasMaxLength(50).HasDefaultValue(Core.Enums.EmailAuthType.Password);
+            entity.Property(ea => ea.EncryptedRefreshToken).IsRequired(false);
+            entity.Property(ea => ea.AccessToken).IsRequired(false);
         });
     }
 }

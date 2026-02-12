@@ -28,7 +28,8 @@ public class EmailAccountsController : ControllerBase
             account.ImapServer,
             account.ImapPort,
             account.Username,
-            account.LastSyncDate
+            account.LastSyncDate,
+            AuthType = account.AuthType.ToString()
         });
     }
 

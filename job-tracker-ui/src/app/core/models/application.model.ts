@@ -48,10 +48,13 @@ export interface RecentActivity {
   date: string;
 }
 
+export type EmailAuthType = 'Password' | 'GoogleOAuth';
+
 export interface EmailAccount {
   emailAddress: string;
   imapServer: string;
   imapPort: number;
   username: string;
   password: string;
+  authType?: EmailAuthType;
 }

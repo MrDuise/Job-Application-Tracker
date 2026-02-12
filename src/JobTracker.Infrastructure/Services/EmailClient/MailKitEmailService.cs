@@ -1,3 +1,4 @@
+using JobTracker.Core.Enums;
 using JobTracker.Core.Interfaces.Services;
 using JobTracker.Core.Models;
 using MailKit;
@@ -32,8 +33,18 @@ public class MailKitEmailService : IEmailService, IDisposable
 
         _client = new ImapClient();
         await _client.ConnectAsync(_account.ImapServer, _account.ImapPort, SecureSocketOptions.SslOnConnect);
-        await _client.AuthenticateAsync(_account.Username, _account.EncryptedPassword);
-        _logger.LogInformation("Connected to IMAP server {Server}", _account.ImapServer);
+
+        if (_account.AuthType == EmailAuthType.GoogleOAuth && !string.IsNullOrEmpty(_account.AccessToken))
+        {
+            var oauth2 = new SaslMechanismOAuth2(_account.EmailAddress, _account.AccessToken);
+            await _client.AuthenticateAsync(oauth2);
+            _logger.LogInformation("Connected to IMAP server {Server} using OAuth2", _account.ImapServer);
+        }
+        else
+        {
+            await _client.AuthenticateAsync(_account.Username, _account.EncryptedPassword);
+            _logger.LogInformation("Connected to IMAP server {Server}", _account.ImapServer);
+        }
     }
 
     public async Task DisconnectAsync()
@@ -51,7 +62,17 @@ public class MailKitEmailService : IEmailService, IDisposable
         {
             using var client = new ImapClient();
             await client.ConnectAsync(account.ImapServer, account.ImapPort, SecureSocketOptions.SslOnConnect);
-            await client.AuthenticateAsync(account.Username, account.EncryptedPassword);
+
+            if (account.AuthType == EmailAuthType.GoogleOAuth && !string.IsNullOrEmpty(account.AccessToken))
+            {
+                var oauth2 = new SaslMechanismOAuth2(account.EmailAddress, account.AccessToken);
+                await client.AuthenticateAsync(oauth2);
+            }
+            else
+            {
+                await client.AuthenticateAsync(account.Username, account.EncryptedPassword);
+            }
+
             await client.DisconnectAsync(true);
             return true;
         }

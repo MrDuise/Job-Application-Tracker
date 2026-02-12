@@ -26,6 +26,9 @@ builder.Services.AddScoped<IEmailProcessingService, EmailProcessingService>();
 builder.Services.AddScoped<IEmailAccountService, EmailAccountService>();
 builder.Services.AddScoped<IEmailService, MailKitEmailService>();
 
+// Google OAuth Service
+builder.Services.AddHttpClient<IGoogleOAuthService, GoogleOAuthService>();
+
 // Ollama LLM Service
 builder.Services.AddHttpClient<ILLMService, OllamaLLMService>(client =>
 {
@@ -63,11 +66,38 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
-// Ensure database is created
+// Ensure database is created and schema is up to date
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<JobTrackerDbContext>();
     db.Database.EnsureCreated();
+
+    // Add OAuth columns to EmailAccounts if they don't exist (SQLite doesn't support EnsureCreated for schema updates)
+    var conn = db.Database.GetDbConnection();
+    await conn.OpenAsync();
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = "PRAGMA table_info(EmailAccounts)";
+    var columns = new HashSet<string>();
+    using (var reader = await cmd.ExecuteReaderAsync())
+    {
+        while (await reader.ReadAsync())
+            columns.Add(reader.GetString(1));
+    }
+
+    async Task AddColumnIfMissing(string column, string type, string defaultValue = "")
+    {
+        if (!columns.Contains(column))
+        {
+            using var alter = conn.CreateCommand();
+            alter.CommandText = $"ALTER TABLE EmailAccounts ADD COLUMN {column} {type}{defaultValue}";
+            await alter.ExecuteNonQueryAsync();
+        }
+    }
+
+    await AddColumnIfMissing("AuthType", "TEXT", " DEFAULT 'Password'");
+    await AddColumnIfMissing("EncryptedRefreshToken", "TEXT", "");
+    await AddColumnIfMissing("AccessToken", "TEXT", "");
+    await AddColumnIfMissing("TokenExpiresAt", "TEXT", "");
 }
 
 if (app.Environment.IsDevelopment())

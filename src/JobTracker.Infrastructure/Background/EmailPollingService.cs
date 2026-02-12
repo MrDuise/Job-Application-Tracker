@@ -1,3 +1,4 @@
+using JobTracker.Core.Enums;
 using JobTracker.Core.Interfaces.Repositories;
 using JobTracker.Core.Interfaces.Services;
 using Microsoft.Extensions.Configuration;
@@ -62,6 +63,27 @@ public class EmailPollingService : BackgroundService
         {
             _logger.LogDebug("No email account configured, skipping poll");
             return;
+        }
+
+        // Refresh OAuth token if needed
+        if (account.AuthType == EmailAuthType.GoogleOAuth)
+        {
+            if (account.TokenExpiresAt.HasValue && account.TokenExpiresAt.Value <= DateTime.UtcNow.AddMinutes(2))
+            {
+                var googleOAuth = scope.ServiceProvider.GetRequiredService<IGoogleOAuthService>();
+                if (!string.IsNullOrEmpty(account.EncryptedRefreshToken))
+                {
+                    account.AccessToken = await googleOAuth.RefreshAccessTokenAsync(account.EncryptedRefreshToken);
+                    account.TokenExpiresAt = DateTime.UtcNow.AddSeconds(3600);
+                    await accountRepo.CreateOrUpdateAsync(account);
+                    _logger.LogInformation("Refreshed Google OAuth access token");
+                }
+                else
+                {
+                    _logger.LogWarning("OAuth token expired and no refresh token available, skipping poll");
+                    return;
+                }
+            }
         }
 
         emailService.Configure(account);

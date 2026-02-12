@@ -29,6 +29,10 @@ public class EmailAccountRepository : IEmailAccountRepository
             existing.ImapPort = account.ImapPort;
             existing.Username = account.Username;
             existing.EncryptedPassword = account.EncryptedPassword;
+            existing.AuthType = account.AuthType;
+            existing.EncryptedRefreshToken = account.EncryptedRefreshToken;
+            existing.AccessToken = account.AccessToken;
+            existing.TokenExpiresAt = account.TokenExpiresAt;
             _context.EmailAccounts.Update(existing);
         }
         else
