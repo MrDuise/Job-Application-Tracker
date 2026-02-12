@@ -3,10 +3,11 @@ using JobTracker.Core.Models;
 using MailKit;
 using MailKit.Net.Imap;
 using MailKit.Search;
+using MailKit.Security;
 using Microsoft.Extensions.Logging;
 using MimeKit;
 
-namespace JobTracker.Infrastructure.Services.MailKit;
+namespace JobTracker.Infrastructure.Services.EmailClient;
 
 public class MailKitEmailService : IEmailService, IDisposable
 {
@@ -30,7 +31,7 @@ public class MailKitEmailService : IEmailService, IDisposable
             throw new InvalidOperationException("Email account not configured. Call Configure() first.");
 
         _client = new ImapClient();
-        await _client.ConnectAsync(_account.ImapServer, _account.ImapPort, MailKit.Security.SecureSocketOptions.SslOnConnect);
+        await _client.ConnectAsync(_account.ImapServer, _account.ImapPort, SecureSocketOptions.SslOnConnect);
         await _client.AuthenticateAsync(_account.Username, _account.EncryptedPassword);
         _logger.LogInformation("Connected to IMAP server {Server}", _account.ImapServer);
     }
@@ -49,7 +50,7 @@ public class MailKitEmailService : IEmailService, IDisposable
         try
         {
             using var client = new ImapClient();
-            await client.ConnectAsync(account.ImapServer, account.ImapPort, MailKit.Security.SecureSocketOptions.SslOnConnect);
+            await client.ConnectAsync(account.ImapServer, account.ImapPort, SecureSocketOptions.SslOnConnect);
             await client.AuthenticateAsync(account.Username, account.EncryptedPassword);
             await client.DisconnectAsync(true);
             return true;

@@ -4,7 +4,7 @@ using JobTracker.Infrastructure.Background;
 using JobTracker.Infrastructure.Data;
 using JobTracker.Infrastructure.Repositories;
 using JobTracker.Infrastructure.Services;
-using JobTracker.Infrastructure.Services.MailKit;
+using JobTracker.Infrastructure.Services.EmailClient;
 using JobTracker.Infrastructure.Services.LLM;
 using Microsoft.EntityFrameworkCore;
 
