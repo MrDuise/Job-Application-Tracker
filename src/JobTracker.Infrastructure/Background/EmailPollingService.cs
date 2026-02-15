@@ -88,7 +88,7 @@ public class EmailPollingService : BackgroundService
 
         emailService.Configure(account);
 
-        var since = account.LastSyncDate ?? DateTime.UtcNow.AddDays(-7);
+        var since = account.LastSyncDate ?? DateTime.UtcNow.AddDays(-548);
         var emails = await emailService.FetchEmailsSinceAsync(since);
 
         if (emails.Count > 0)

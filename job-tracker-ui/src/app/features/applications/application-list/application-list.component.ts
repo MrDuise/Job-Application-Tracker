@@ -31,6 +31,41 @@ import { DateAgoPipe } from '../../../shared/pipes/date-ago.pipe';
       </button>
     </div>
 
+    <div class="status-counters">
+      <div class="counter-card total" [class.active]="statusFilter === ''" (click)="filterByStatus('')">
+        <div class="counter-value">{{ applications.length }}</div>
+        <div class="counter-label">Total</div>
+      </div>
+      <div class="counter-card applied" [class.active]="statusFilter === 'Applied'" (click)="filterByStatus('Applied')">
+        <div class="counter-value">{{ countByStatus('Applied') }}</div>
+        <div class="counter-label">Applied</div>
+      </div>
+      <div class="counter-card under-review" [class.active]="statusFilter === 'UnderReview'" (click)="filterByStatus('UnderReview')">
+        <div class="counter-value">{{ countByStatus('UnderReview') }}</div>
+        <div class="counter-label">Under Review</div>
+      </div>
+      <div class="counter-card interview" [class.active]="statusFilter === 'InterviewScheduled'" (click)="filterByStatus('InterviewScheduled')">
+        <div class="counter-value">{{ countByStatus('InterviewScheduled') }}</div>
+        <div class="counter-label">Interview</div>
+      </div>
+      <div class="counter-card technical" [class.active]="statusFilter === 'TechnicalAssessment'" (click)="filterByStatus('TechnicalAssessment')">
+        <div class="counter-value">{{ countByStatus('TechnicalAssessment') }}</div>
+        <div class="counter-label">Technical</div>
+      </div>
+      <div class="counter-card offer" [class.active]="statusFilter === 'Offer'" (click)="filterByStatus('Offer')">
+        <div class="counter-value">{{ countByStatus('Offer') }}</div>
+        <div class="counter-label">Offer</div>
+      </div>
+      <div class="counter-card rejected" [class.active]="statusFilter === 'Rejected'" (click)="filterByStatus('Rejected')">
+        <div class="counter-value">{{ countByStatus('Rejected') }}</div>
+        <div class="counter-label">Rejected</div>
+      </div>
+      <div class="counter-card withdrawn" [class.active]="statusFilter === 'Withdrawn'" (click)="filterByStatus('Withdrawn')">
+        <div class="counter-value">{{ countByStatus('Withdrawn') }}</div>
+        <div class="counter-label">Withdrawn</div>
+      </div>
+    </div>
+
     <div class="filters">
       <mat-form-field appearance="outline">
         <mat-label>Search</mat-label>
@@ -94,6 +129,49 @@ import { DateAgoPipe } from '../../../shared/pipes/date-ago.pipe';
   `,
   styles: [`
     .header { display: flex; justify-content: space-between; align-items: center; }
+    .status-counters {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .counter-card {
+      flex: 1;
+      min-width: 100px;
+      padding: 12px 16px;
+      border-radius: 8px;
+      text-align: center;
+      cursor: pointer;
+      transition: transform 0.15s, box-shadow 0.15s;
+      border: 2px solid transparent;
+    }
+    .counter-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 8px rgba(0,0,0,0.12);
+    }
+    .counter-card.active {
+      border-color: rgba(0,0,0,0.4);
+    }
+    .counter-value {
+      font-size: 1.8rem;
+      font-weight: 700;
+      line-height: 1;
+    }
+    .counter-label {
+      font-size: 0.75rem;
+      margin-top: 4px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .counter-card.total { background: #e3f2fd; color: #0d47a1; }
+    .counter-card.applied { background: #bbdefb; color: #1565c0; }
+    .counter-card.under-review { background: #fff3e0; color: #e65100; }
+    .counter-card.interview { background: #e1bee7; color: #6a1b9a; }
+    .counter-card.technical { background: #d1c4e9; color: #4527a0; }
+    .counter-card.offer { background: #c8e6c9; color: #2e7d32; }
+    .counter-card.rejected { background: #ffcdd2; color: #c62828; }
+    .counter-card.withdrawn { background: #f5f5f5; color: #616161; }
     .filters { display: flex; gap: 16px; margin-bottom: 16px; }
     .filters mat-form-field { flex: 1; }
     table { width: 100%; }
@@ -121,6 +199,15 @@ export class ApplicationListComponent implements OnInit {
       this.applications = apps;
       this.applyFilter();
     });
+  }
+
+  countByStatus(status: string): number {
+    return this.applications.filter(app => app.status === status).length;
+  }
+
+  filterByStatus(status: string): void {
+    this.statusFilter = status;
+    this.applyFilter();
   }
 
   applyFilter(): void {
