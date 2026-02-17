@@ -40,21 +40,45 @@ public class OllamaLLMService : ILLMService
         return await ClassifyEmailAsync(emailContent);
     }
 
+    private const int MaxEmailContentLength = 3000;
+
     private string BuildClassificationPrompt(string emailContent)
     {
+        // Truncate to avoid overwhelming the local LLM context window
+        if (emailContent.Length > MaxEmailContentLength)
+            emailContent = emailContent[..MaxEmailContentLength] + "\n[TRUNCATED]";
+
         return $$"""
-            Analyze this email and determine:
-            1. Is this job application related? (true/false)
-            2. Company name (extract from sender or body)
-            3. Job title (if mentioned)
-            4. Status: applied/rejected/interview_request/offer/other
-            5. Any action items or deadlines
+            You are classifying emails to determine if they are related to a job application process.
+
+            An email IS job-related if it is:
+            - A confirmation that a job application was received
+            - A rejection or "we decided to move forward with other candidates" notice
+            - An interview invitation or scheduling email
+            - A job offer or offer letter
+            - A follow-up from a recruiter about a specific role
+            - A status update on a job application
+
+            An email is NOT job-related if it is:
+            - An advertisement, promotion, or marketing email
+            - A newsletter or mailing list email
+            - A social media notification
+            - A receipt, shipping notification, or purchase confirmation
+            - Spam or phishing
+            - A job board digest or "jobs you might like" blast (these are ads, not applications)
+            - Any email with "unsubscribe" language that is clearly bulk/marketing
 
             Email Content:
             {{emailContent}}
 
-            Respond ONLY with JSON in this format:
-            {"isJobRelated": true, "companyName": "Company Name", "jobTitle": "Software Engineer", "status": "applied", "actionItems": []}
+            Respond ONLY with valid JSON (no extra text) in this exact format:
+            {"isJobRelated": false, "companyName": null, "jobTitle": null, "status": null, "actionItems": []}
+
+            If the email IS job-related, set isJobRelated to true and fill in the fields:
+            - companyName: the hiring company name
+            - jobTitle: the job title if mentioned, otherwise null
+            - status: one of "applied", "rejected", "interview_request", "offer", "under_review", or "other"
+            - actionItems: list of action items or deadlines if any
             """;
     }
 

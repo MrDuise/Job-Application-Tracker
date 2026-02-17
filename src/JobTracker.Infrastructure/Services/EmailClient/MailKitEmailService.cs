@@ -1,3 +1,5 @@
+using System.Net;
+using System.Text.RegularExpressions;
 using JobTracker.Core.Enums;
 using JobTracker.Core.Interfaces.Services;
 using JobTracker.Core.Models;
@@ -96,8 +98,13 @@ public class MailKitEmailService : IEmailService, IDisposable
         var inbox = _client!.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadOnly);
 
-        var query = SearchQuery.DeliveredAfter(since);
+        // Build keyword filter to only fetch likely job-related emails
+        var dateQuery = SearchQuery.DeliveredAfter(since);
+        var keywordQuery = BuildJobKeywordQuery();
+        var query = dateQuery.And(keywordQuery);
+
         var uids = await inbox.SearchAsync(query);
+        _logger.LogInformation("IMAP search matched {Count} emails since {Since}", uids.Count, since);
 
         var emails = new List<Email>();
         foreach (var uid in uids)
@@ -108,6 +115,27 @@ public class MailKitEmailService : IEmailService, IDisposable
 
         _logger.LogInformation("Fetched {Count} emails since {Since}", emails.Count, since);
         return emails;
+    }
+
+    private static SearchQuery BuildJobKeywordQuery()
+    {
+        // Common terms found in job application emails (subject OR body)
+        string[] keywords =
+        [
+            "application", "interview", "position", "offer",
+            "candidate", "resume", "hiring", "recruiter",
+            "applied", "rejected", "opportunity", "job"
+        ];
+
+        SearchQuery? combined = null;
+        foreach (var keyword in keywords)
+        {
+            var subjectMatch = SearchQuery.SubjectContains(keyword);
+            var match = combined is null ? subjectMatch : combined.Or(subjectMatch);
+            combined = match;
+        }
+
+        return combined!;
     }
 
     public async Task<Email?> GetEmailByIdAsync(string emailId)
@@ -150,17 +178,39 @@ public class MailKitEmailService : IEmailService, IDisposable
 
     private static Email ConvertToEmail(MimeMessage message, string uid)
     {
+        var body = message.TextBody;
+        if (string.IsNullOrEmpty(body) && !string.IsNullOrEmpty(message.HtmlBody))
+        {
+            body = StripHtml(message.HtmlBody);
+        }
+
         return new Email
         {
             Id = uid,
             Subject = message.Subject ?? string.Empty,
             From = message.From.ToString(),
             To = message.To.ToString(),
-            Body = message.TextBody ?? message.HtmlBody ?? string.Empty,
+            Body = body ?? string.Empty,
             ReceivedDate = message.Date.UtcDateTime,
             IsRead = false,
             ThreadId = message.Headers["In-Reply-To"] ?? message.Headers["References"]
         };
+    }
+
+    private static string StripHtml(string html)
+    {
+        // Remove style and script blocks entirely
+        var cleaned = Regex.Replace(html, @"<(style|script)[^>]*>[\s\S]*?</\1>", " ", RegexOptions.IgnoreCase);
+        // Replace block-level tags with newlines for readability
+        cleaned = Regex.Replace(cleaned, @"<(br|p|div|tr|li|h[1-6])[^>]*>", "\n", RegexOptions.IgnoreCase);
+        // Remove all remaining HTML tags
+        cleaned = Regex.Replace(cleaned, @"<[^>]+>", " ");
+        // Decode HTML entities
+        cleaned = WebUtility.HtmlDecode(cleaned);
+        // Collapse whitespace
+        cleaned = Regex.Replace(cleaned, @"[ \t]+", " ");
+        cleaned = Regex.Replace(cleaned, @"\n{3,}", "\n\n");
+        return cleaned.Trim();
     }
 
     public void Dispose()

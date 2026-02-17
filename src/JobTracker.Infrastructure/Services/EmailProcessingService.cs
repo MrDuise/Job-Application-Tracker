@@ -39,10 +39,60 @@ public class EmailProcessingService : IEmailProcessingService
 
     public async Task ProcessEmailBatchAsync(List<Email> emails)
     {
+        var skipped = 0;
+        var processed = 0;
+        var jobRelated = 0;
+
         foreach (var email in emails)
         {
+            if (IsObviousMarketingEmail(email))
+            {
+                skipped++;
+                _logger.LogDebug("Skipping marketing email {EmailId}: {Subject}", email.Id, email.Subject);
+                continue;
+            }
+
             await ProcessNewEmailAsync(email);
+            processed++;
         }
+
+        _logger.LogInformation(
+            "Batch complete: {Processed} processed, {Skipped} marketing skipped out of {Total} total",
+            processed, skipped, emails.Count);
+    }
+
+    private static bool IsObviousMarketingEmail(Email email)
+    {
+        var subject = email.Subject.ToLowerInvariant();
+        var from = email.From.ToLowerInvariant();
+        var body = email.Body.ToLowerInvariant();
+
+        // Skip emails from common marketing/notification senders
+        string[] marketingSenders =
+        [
+            "noreply@", "no-reply@", "marketing@", "newsletter@", "promotions@",
+            "deals@", "notifications@social", "info@linkedin.com"
+        ];
+        if (marketingSenders.Any(s => from.Contains(s)) && !SubjectHasJobKeyword(subject))
+            return true;
+
+        // Skip if the body has strong marketing indicators and no job keywords in subject
+        string[] marketingIndicators = ["unsubscribe", "view in browser", "email preferences", "opt out"];
+        var marketingScore = marketingIndicators.Count(ind => body.Contains(ind));
+        if (marketingScore >= 2 && !SubjectHasJobKeyword(subject))
+            return true;
+
+        return false;
+    }
+
+    private static bool SubjectHasJobKeyword(string subject)
+    {
+        string[] jobKeywords =
+        [
+            "application", "interview", "position", "offer", "candidate",
+            "applied", "rejected", "opportunity", "role", "hiring"
+        ];
+        return jobKeywords.Any(k => subject.Contains(k));
     }
 
     public async Task ClassifyAndLinkEmailAsync(Email email)
