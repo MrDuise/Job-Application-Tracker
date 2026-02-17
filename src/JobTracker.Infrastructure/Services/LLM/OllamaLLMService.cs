@@ -122,8 +122,8 @@ public class OllamaLLMService : ILLMService
             return new EmailClassificationResult
             {
                 IsJobRelated = parsed.GetProperty("isJobRelated").GetBoolean(),
-                CompanyName = parsed.TryGetProperty("companyName", out var cn) ? cn.GetString() : null,
-                JobTitle = parsed.TryGetProperty("jobTitle", out var jt) ? jt.GetString() : null,
+                CompanyName = SanitizeLLMString(parsed.TryGetProperty("companyName", out var cn) ? cn.GetString() : null),
+                JobTitle = SanitizeLLMString(parsed.TryGetProperty("jobTitle", out var jt) ? jt.GetString() : null),
                 Status = parsed.TryGetProperty("status", out var s) ? s.GetString() : null,
                 ActionItems = parsed.TryGetProperty("actionItems", out var ai)
                     ? ai.EnumerateArray().Select(x => x.GetString() ?? string.Empty).ToList()
@@ -135,6 +135,27 @@ public class OllamaLLMService : ILLMService
             _logger.LogWarning(ex, "Failed to parse LLM classification response");
             return new EmailClassificationResult { IsJobRelated = false };
         }
+    }
+
+    /// <summary>
+    /// Returns null if the LLM returned a placeholder/type-name instead of a real value.
+    /// </summary>
+    private static string? SanitizeLLMString(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        // Reject common type-name placeholders that LLMs sometimes emit
+        string[] invalidValues =
+        [
+            "string", "null", "undefined", "n/a", "none", "unknown",
+            "not specified", "not mentioned", "not available", "not provided"
+        ];
+
+        if (invalidValues.Contains(value.Trim(), StringComparer.OrdinalIgnoreCase))
+            return null;
+
+        return value.Trim();
     }
 
     private class OllamaResponse

@@ -106,6 +106,9 @@ public class EmailProcessingService : IEmailProcessingService
             return;
         }
 
+        // If the LLM flagged it as job-related but couldn't extract a company name,
+        // it's likely a false positive (e.g. LinkedIn digest, generic notification).
+        // Only proceed if we have a company name OR the email is part of an existing thread.
         var application = await DetectApplicationFromEmailAsync(email);
         if (application is null && classification.CompanyName is not null)
         {
@@ -116,6 +119,14 @@ public class EmailProcessingService : IEmailProcessingService
 
         if (application is null)
         {
+            if (classification.CompanyName is null)
+            {
+                _logger.LogDebug(
+                    "Email {EmailId} classified as job-related but no company name extracted, skipping",
+                    email.Id);
+                return;
+            }
+
             application = await CreateApplicationFromEmailAsync(email);
             _logger.LogInformation("Created new application from email: {Company}", application.CompanyName);
         }
