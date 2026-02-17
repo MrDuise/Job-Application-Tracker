@@ -27,7 +27,7 @@ export class GoogleAuthService {
     return new Promise((resolve, reject) => {
       this.codeClient = google.accounts.oauth2.initCodeClient({
         client_id: clientId,
-        scope: 'https://mail.google.com/',
+        scope: 'openid email https://mail.google.com/',
         ux_mode: 'popup',
         callback: (response: any) => {
           if (response.code) {

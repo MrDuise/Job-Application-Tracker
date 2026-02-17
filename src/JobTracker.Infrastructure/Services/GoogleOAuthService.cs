@@ -121,8 +121,10 @@ public class GoogleOAuthService : IGoogleOAuthService
 
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogError("Failed to get user info from Google: {Response}", json);
-            throw new InvalidOperationException("Failed to get user email from Google");
+            _logger.LogError("Failed to get user info from Google (HTTP {StatusCode}): {Response}", response.StatusCode, json);
+            throw new InvalidOperationException(
+                $"Failed to get user email from Google (HTTP {response.StatusCode}). " +
+                "Ensure the OAuth scope includes 'openid email'.");
         }
 
         var userInfo = JsonSerializer.Deserialize<GoogleUserInfo>(json);
