@@ -67,32 +67,40 @@ public class EmailProcessingService : IEmailProcessingService
         var from = email.From.ToLowerInvariant();
         var body = email.Body.ToLowerInvariant();
 
-        // Skip emails from common marketing/notification senders
+        // Skip emails from senders that are EXCLUSIVELY marketing.
+        // NOTE: noreply@ and no-reply@ are intentionally NOT here — nearly every ATS
+        // (Greenhouse, Lever, Workday, iCIMS, LinkedIn, Indeed) sends application
+        // confirmations from noreply addresses.
         string[] marketingSenders =
         [
-            "noreply@", "no-reply@", "marketing@", "newsletter@", "promotions@",
+            "marketing@", "newsletter@", "promotions@",
             "deals@", "notifications@social", "info@linkedin.com"
         ];
-        if (marketingSenders.Any(s => from.Contains(s)) && !SubjectHasJobKeyword(subject))
+        if (marketingSenders.Any(s => from.Contains(s)) && !HasJobKeyword(subject, body))
             return true;
 
-        // Skip if the body has strong marketing indicators and no job keywords in subject
+        // Skip if the body has strong marketing indicators and no job keywords anywhere
         string[] marketingIndicators = ["unsubscribe", "view in browser", "email preferences", "opt out"];
         var marketingScore = marketingIndicators.Count(ind => body.Contains(ind));
-        if (marketingScore >= 2 && !SubjectHasJobKeyword(subject))
+        if (marketingScore >= 2 && !HasJobKeyword(subject, body))
             return true;
 
         return false;
     }
 
-    private static bool SubjectHasJobKeyword(string subject)
+    private static bool HasJobKeyword(string subject, string body)
     {
         string[] jobKeywords =
         [
             "application", "interview", "position", "offer", "candidate",
-            "applied", "rejected", "opportunity", "role", "hiring"
+            "applied", "rejected", "opportunity", "role", "hiring",
+            "thank you for applying", "your application", "we received your",
+            "application received", "application submitted", "application confirmed",
+            "candidacy", "phone screen", "on-site", "onsite", "offer letter"
         ];
-        return jobKeywords.Any(k => subject.Contains(k));
+        // Check subject first (fast path), then first 500 chars of body
+        var bodySnippet = body.Length > 500 ? body[..500] : body;
+        return jobKeywords.Any(k => subject.Contains(k) || bodySnippet.Contains(k));
     }
 
     public async Task ClassifyAndLinkEmailAsync(Email email)

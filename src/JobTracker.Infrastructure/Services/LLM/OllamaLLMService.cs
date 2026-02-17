@@ -49,24 +49,28 @@ public class OllamaLLMService : ILLMService
             emailContent = emailContent[..MaxEmailContentLength] + "\n[TRUNCATED]";
 
         return $$"""
-            You are classifying emails to determine if they are related to a job application process.
+            You are classifying emails to determine if they are related to a job application that the recipient has ALREADY submitted.
 
-            An email IS job-related if it is:
-            - A confirmation that a job application was received
-            - A rejection or "we decided to move forward with other candidates" notice
-            - An interview invitation or scheduling email
-            - A job offer or offer letter
-            - A follow-up from a recruiter about a specific role
-            - A status update on a job application
+            CRITICAL DISTINCTION: Only classify an email as job-related if the recipient has ALREADY applied or is ALREADY in an interview process. Emails inviting someone to apply or suggesting they apply are NOT job-related.
 
-            An email is NOT job-related if it is:
-            - An advertisement, promotion, or marketing email
-            - A newsletter or mailing list email
-            - A social media notification
-            - A receipt, shipping notification, or purchase confirmation
-            - Spam or phishing
-            - A job board digest or "jobs you might like" blast (these are ads, not applications)
-            - Any email with "unsubscribe" language that is clearly bulk/marketing
+            An email IS job-related if it:
+            - Confirms that a job application was received ("thank you for applying", "your application has been submitted", "we received your application")
+            - Is a rejection notice ("we decided to move forward with other candidates", "unfortunately we will not be moving forward")
+            - Is an interview invitation for a role the recipient already applied to ("we'd like to schedule an interview", "we'd like to invite you to interview")
+            - Is a job offer or offer letter
+            - Is a status update on an existing application ("your application is under review", "the hiring manager has reviewed your application")
+            - Is from an ATS system (Greenhouse, Lever, Workday, iCIMS, SmartRecruiters) confirming an application
+
+            An email is NOT job-related if it:
+            - Is a recruiter reaching out to ask the recipient to apply ("I came across your profile", "I think you'd be a great fit", "are you open to new opportunities", "would you be interested in applying")
+            - Is a staffing agency or recruiting firm's mass outreach
+            - Is a LinkedIn message from a recruiter trying to get the recipient to apply to a new role
+            - Is a job board digest or "jobs you might like" email (these are ads, not applications)
+            - Is a newsletter, marketing email, or promotional email
+            - Is a social media notification
+            - Is a receipt, shipping notification, or purchase confirmation
+            - Is spam or phishing
+            - Suggests "apply now" or "check out this role" — the recipient has NOT applied yet
 
             Email Content:
             {{emailContent}}
@@ -75,10 +79,12 @@ public class OllamaLLMService : ILLMService
             {"isJobRelated": false, "companyName": null, "jobTitle": null, "status": null, "actionItems": []}
 
             If the email IS job-related, set isJobRelated to true and fill in the fields:
-            - companyName: the hiring company name
-            - jobTitle: the job title if mentioned, otherwise null
+            - companyName: the hiring company name (must be a real company name, not a placeholder)
+            - jobTitle: the job title if mentioned, otherwise null (must be a real job title, not a placeholder)
             - status: one of "applied", "rejected", "interview_request", "offer", "under_review", or "other"
             - actionItems: list of action items or deadlines if any
+
+            If unsure whether the recipient applied or is being asked to apply, set isJobRelated to false.
             """;
     }
 
