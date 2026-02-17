@@ -127,12 +127,10 @@ public class MailKitEmailService : IEmailService, IDisposable
             "applied", "rejected", "opportunity", "job"
         ];
 
-        SearchQuery? combined = null;
-        foreach (var keyword in keywords)
+        SearchQuery combined = SearchQuery.SubjectContains(keywords[0]);
+        for (var i = 1; i < keywords.Length; i++)
         {
-            var subjectMatch = SearchQuery.SubjectContains(keyword);
-            var match = combined is null ? subjectMatch : combined.Or(subjectMatch);
-            combined = match;
+            combined = combined.Or(SearchQuery.SubjectContains(keywords[i]));
         }
 
         return combined!;
