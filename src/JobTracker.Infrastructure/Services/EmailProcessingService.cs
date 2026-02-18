@@ -41,7 +41,7 @@ public class EmailProcessingService : IEmailProcessingService
     {
         var skipped = 0;
         var processed = 0;
-        var jobRelated = 0;
+        var errors = 0;
 
         foreach (var email in emails)
         {
@@ -52,13 +52,21 @@ public class EmailProcessingService : IEmailProcessingService
                 continue;
             }
 
-            await ProcessNewEmailAsync(email);
-            processed++;
+            try
+            {
+                await ProcessNewEmailAsync(email);
+                processed++;
+            }
+            catch (Exception ex)
+            {
+                errors++;
+                _logger.LogError(ex, "Failed to process email {EmailId}: {Subject}", email.Id, email.Subject);
+            }
         }
 
         _logger.LogInformation(
-            "Batch complete: {Processed} processed, {Skipped} marketing skipped out of {Total} total",
-            processed, skipped, emails.Count);
+            "Batch complete: {Processed} processed, {Skipped} marketing skipped, {Errors} errors out of {Total} total",
+            processed, skipped, errors, emails.Count);
     }
 
     private static bool IsObviousMarketingEmail(Email email)

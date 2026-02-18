@@ -72,9 +72,17 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider.GetRequiredService<JobTrackerDbContext>();
     db.Database.EnsureCreated();
 
-    // Add OAuth columns to EmailAccounts if they don't exist (SQLite doesn't support EnsureCreated for schema updates)
+    // Use DELETE journal mode so external SQLite GUI tools can access the DB
+    // while the app is running (WAL mode locks the file for other processes)
     var conn = db.Database.GetDbConnection();
     await conn.OpenAsync();
+    using (var pragmaCmd = conn.CreateCommand())
+    {
+        pragmaCmd.CommandText = "PRAGMA journal_mode=DELETE";
+        await pragmaCmd.ExecuteNonQueryAsync();
+    }
+
+    // Add OAuth columns to EmailAccounts if they don't exist (SQLite doesn't support EnsureCreated for schema updates)
     using var cmd = conn.CreateCommand();
     cmd.CommandText = "PRAGMA table_info(EmailAccounts)";
     var columns = new HashSet<string>();
