@@ -57,8 +57,13 @@ public class EmailsController : ControllerBase
             return BadRequest("No email account configured.");
 
         _emailService.Configure(account);
-        var emails = await _emailService.FetchNewEmailsAsync();
+
+        var since = account.LastSyncDate ?? DateTime.UtcNow.AddDays(-548);
+        var emails = await _emailService.FetchEmailsSinceAsync(since);
         await _processingService.ProcessEmailBatchAsync(emails);
+
+        account.LastSyncDate = DateTime.UtcNow;
+        await _accountRepo.CreateOrUpdateAsync(account);
 
         return Ok(new { processed = emails.Count });
     }

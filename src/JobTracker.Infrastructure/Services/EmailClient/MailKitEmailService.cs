@@ -85,11 +85,6 @@ public class MailKitEmailService : IEmailService, IDisposable
         }
     }
 
-    public async Task<List<Email>> FetchNewEmailsAsync()
-    {
-        return await FetchEmailsSinceAsync(DateTime.UtcNow.AddDays(-1));
-    }
-
     public async Task<List<Email>> FetchEmailsSinceAsync(DateTime since)
     {
         if (_client is null || !_client.IsConnected)
@@ -119,7 +114,7 @@ public class MailKitEmailService : IEmailService, IDisposable
 
     private static SearchQuery BuildJobKeywordQuery()
     {
-        // Common terms found in job application emails (subject OR body)
+        // Common terms found in job application emails — search both subject and body
         string[] keywords =
         [
             "application", "interview", "position", "offer",
@@ -127,10 +122,14 @@ public class MailKitEmailService : IEmailService, IDisposable
             "applied", "rejected", "opportunity", "job"
         ];
 
-        SearchQuery combined = SearchQuery.SubjectContains(keywords[0]);
+        SearchQuery combined = SearchQuery.SubjectContains(keywords[0])
+            .Or(SearchQuery.BodyContains(keywords[0]));
+
         for (var i = 1; i < keywords.Length; i++)
         {
-            combined = combined.Or(SearchQuery.SubjectContains(keywords[i]));
+            combined = combined
+                .Or(SearchQuery.SubjectContains(keywords[i]))
+                .Or(SearchQuery.BodyContains(keywords[i]));
         }
 
         return combined!;

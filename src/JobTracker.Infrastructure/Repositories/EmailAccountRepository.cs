@@ -33,6 +33,8 @@ public class EmailAccountRepository : IEmailAccountRepository
             existing.EncryptedRefreshToken = account.EncryptedRefreshToken;
             existing.AccessToken = account.AccessToken;
             existing.TokenExpiresAt = account.TokenExpiresAt;
+            if (account.LastSyncDate.HasValue)
+                existing.LastSyncDate = account.LastSyncDate;
             _context.EmailAccounts.Update(existing);
         }
         else
