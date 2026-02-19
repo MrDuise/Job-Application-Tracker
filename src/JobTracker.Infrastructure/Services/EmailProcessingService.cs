@@ -1,3 +1,4 @@
+using JobTracker.Core.DTOs;
 using JobTracker.Core.Enums;
 using JobTracker.Core.Interfaces.Repositories;
 using JobTracker.Core.Interfaces.Services;
@@ -113,8 +114,43 @@ public class EmailProcessingService : IEmailProcessingService
 
     public async Task ClassifyAndLinkEmailAsync(Email email)
     {
-        var emailContent = $"Subject: {email.Subject}\nFrom: {email.From}\nBody: {email.Body}";
-        var classification = await _llmService.ClassifyEmailAsync(emailContent);
+        // 1. Thread detection first — if this email is part of a known thread,
+        //    link it immediately and check for status updates via rules (fast)
+        var application = await DetectApplicationFromEmailAsync(email);
+        if (application is not null)
+        {
+            await _emailRepo.LinkToApplicationAsync(email.Id, application.Id);
+            _logger.LogDebug("Email {EmailId} linked to application {AppId} via thread", email.Id, application.Id);
+
+            // Still check for status updates (rules are instant)
+            var threadClassification = RuleBasedEmailClassifier.Classify(email);
+            if (threadClassification?.Status is not null)
+            {
+                var newStatus = MapStatusString(threadClassification.Status);
+                if (newStatus.HasValue && newStatus.Value != application.Status)
+                {
+                    await _applicationRepo.UpdateStatusAsync(application.Id, newStatus.Value);
+                    _logger.LogInformation("Updated application {AppId} status to {Status} via thread email", application.Id, newStatus.Value);
+                }
+            }
+            return;
+        }
+
+        // 2. Try rule-based classification (instant, no LLM call)
+        var classification = RuleBasedEmailClassifier.Classify(email);
+
+        // 3. Fall back to LLM only if rules are uncertain
+        if (classification is null)
+        {
+            var emailContent = $"Subject: {email.Subject}\nFrom: {email.From}\nBody: {email.Body}";
+            classification = await _llmService.ClassifyEmailAsync(emailContent);
+            _logger.LogDebug("Email {EmailId} classified by LLM: job={IsJobRelated}", email.Id, classification.IsJobRelated);
+        }
+        else
+        {
+            _logger.LogDebug("Email {EmailId} classified by rules: job={IsJobRelated} status={Status}",
+                email.Id, classification.IsJobRelated, classification.Status);
+        }
 
         if (!classification.IsJobRelated)
         {
@@ -122,11 +158,13 @@ public class EmailProcessingService : IEmailProcessingService
             return;
         }
 
-        // If the LLM flagged it as job-related but couldn't extract a company name,
-        // it's likely a false positive (e.g. LinkedIn digest, generic notification).
-        // Only proceed if we have a company name OR the email is part of an existing thread.
-        var application = await DetectApplicationFromEmailAsync(email);
-        if (application is null && classification.CompanyName is not null)
+        // If classified as job-related but no company name, skip
+        if (classification.CompanyName is null)
+        {
+            // Try to find an existing application by company name match
+            application = null;
+        }
+        else
         {
             application = await FindMatchingApplicationAsync(
                 classification.CompanyName,
@@ -143,7 +181,7 @@ public class EmailProcessingService : IEmailProcessingService
                 return;
             }
 
-            application = await CreateApplicationFromEmailAsync(email);
+            application = await CreateApplicationFromClassificationAsync(email, classification);
             _logger.LogInformation("Created new application from email: {Company}", application.CompanyName);
         }
 
@@ -184,6 +222,20 @@ public class EmailProcessingService : IEmailProcessingService
         var emailContent = $"Subject: {email.Subject}\nFrom: {email.From}\nBody: {email.Body}";
         var classification = await _llmService.ExtractApplicationDataAsync(emailContent);
 
+        var application = new Application
+        {
+            CompanyName = classification.CompanyName ?? ExtractCompanyFromEmail(email.From),
+            JobTitle = classification.JobTitle ?? "Unknown Position",
+            Status = MapStatusString(classification.Status) ?? ApplicationStatus.Applied,
+            AppliedDate = email.ReceivedDate
+        };
+
+        return await _applicationRepo.CreateAsync(application);
+    }
+
+    private async Task<Application> CreateApplicationFromClassificationAsync(
+        Email email, EmailClassificationResult classification)
+    {
         var application = new Application
         {
             CompanyName = classification.CompanyName ?? ExtractCompanyFromEmail(email.From),
