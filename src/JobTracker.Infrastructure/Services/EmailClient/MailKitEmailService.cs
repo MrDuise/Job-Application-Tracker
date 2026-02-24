@@ -93,23 +93,81 @@ public class MailKitEmailService : IEmailService, IDisposable
         var inbox = _client!.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadOnly);
 
-        // Build keyword filter to only fetch likely job-related emails
-        var dateQuery = SearchQuery.DeliveredAfter(since);
-        var keywordQuery = BuildJobKeywordQuery();
-        var query = dateQuery.And(keywordQuery);
+        // 5-minute timeout for the entire search + fetch operation
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
 
-        var uids = await inbox.SearchAsync(query);
+        // Build search query — Gmail-native or standard IMAP
+        SearchQuery query;
+        if (IsGmail())
+        {
+            var rawQuery = BuildGmailRawQuery(since);
+            query = SearchQuery.GMailRawSearch(rawQuery);
+            _logger.LogInformation("Using Gmail native search (X-GM-RAW): {Query}", rawQuery);
+        }
+        else
+        {
+            var dateQuery = SearchQuery.DeliveredAfter(since);
+            var keywordQuery = BuildJobKeywordQuery();
+            query = dateQuery.And(keywordQuery);
+            _logger.LogInformation("Using standard IMAP search");
+        }
+
+        IList<UniqueId> uids;
+        try
+        {
+            uids = await inbox.SearchAsync(query, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogError(
+                "IMAP search timed out after 5 minutes. Server: {Server}, Since: {Since}",
+                _account!.ImapServer, since);
+            throw new TimeoutException(
+                $"IMAP search timed out after 5 minutes on {_account.ImapServer}.");
+        }
+
         _logger.LogInformation("IMAP search matched {Count} emails since {Since}", uids.Count, since);
 
         var emails = new List<Email>();
         foreach (var uid in uids)
         {
-            var message = await inbox.GetMessageAsync(uid);
+            var message = await inbox.GetMessageAsync(uid, cts.Token);
             emails.Add(ConvertToEmail(message, uid.ToString()));
         }
 
         _logger.LogInformation("Fetched {Count} emails since {Since}", emails.Count, since);
         return emails;
+    }
+
+    private bool IsGmail()
+    {
+        return _account?.ImapServer?.Contains("gmail.com", StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    private static string BuildGmailRawQuery(DateTime since)
+    {
+        var dateFilter = $"after:{since:yyyy/MM/dd}";
+
+        string[] keywords =
+        [
+            "application", "interview", "applied", "offer",
+            "candidate", "resume", "hiring", "recruiter",
+            "rejected", "opportunity", "job", "position"
+        ];
+
+        string[] atsDomains =
+        [
+            "@greenhouse.io", "@lever.co", "@myworkday.com",
+            "@icims.com", "@smartrecruiters.com", "@jobvite.com",
+            "@ashbyhq.com", "@breezy.hr", "@linkedin.com",
+            "@indeed.com", "@glassdoor.com"
+        ];
+
+        var keywordClauses = keywords.AsEnumerable();
+        var fromClauses = atsDomains.Select(d => $"from:{d}");
+        var allClauses = keywordClauses.Concat(fromClauses);
+
+        return $"{dateFilter} ({string.Join(" OR ", allClauses)})";
     }
 
     private static SearchQuery BuildJobKeywordQuery()

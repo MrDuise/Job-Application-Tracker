@@ -144,7 +144,7 @@ public class EmailSyncOrchestrator
         // Fetch emails
         _status = "fetching";
         var since = account.LastSyncDate ?? DateTime.UtcNow.AddDays(-548);
-        _logger.LogInformation("Starting email fetch since {Since}", since);
+        _logger.LogInformation("Starting email fetch since {Since} from {Server}", since, account.ImapServer);
 
         var emails = await emailService.FetchEmailsSinceAsync(since);
         _totalEmails = emails.Count;
