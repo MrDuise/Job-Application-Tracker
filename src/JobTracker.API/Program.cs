@@ -36,6 +36,9 @@ builder.Services.AddHttpClient<ILLMService, OllamaLLMService>(client =>
     client.Timeout = TimeSpan.FromMinutes(2);
 });
 
+// Sync orchestrator — singleton so controller + polling service share the same lock/status
+builder.Services.AddSingleton<EmailSyncOrchestrator>();
+
 // Background Services
 builder.Services.AddHostedService<EmailPollingService>();
 

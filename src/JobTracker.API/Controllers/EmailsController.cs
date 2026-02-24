@@ -1,6 +1,6 @@
 using JobTracker.Core.Interfaces.Repositories;
-using JobTracker.Core.Interfaces.Services;
 using JobTracker.Core.Models;
+using JobTracker.Infrastructure.Services;
 using Microsoft.AspNetCore.Mvc;
 
 namespace JobTracker.API.Controllers;
@@ -10,20 +10,14 @@ namespace JobTracker.API.Controllers;
 public class EmailsController : ControllerBase
 {
     private readonly IEmailRepository _emailRepo;
-    private readonly IEmailAccountRepository _accountRepo;
-    private readonly IEmailService _emailService;
-    private readonly IEmailProcessingService _processingService;
+    private readonly EmailSyncOrchestrator _syncOrchestrator;
 
     public EmailsController(
         IEmailRepository emailRepo,
-        IEmailAccountRepository accountRepo,
-        IEmailService emailService,
-        IEmailProcessingService processingService)
+        EmailSyncOrchestrator syncOrchestrator)
     {
         _emailRepo = emailRepo;
-        _accountRepo = accountRepo;
-        _emailService = emailService;
-        _processingService = processingService;
+        _syncOrchestrator = syncOrchestrator;
     }
 
     [HttpGet]
@@ -50,22 +44,18 @@ public class EmailsController : ControllerBase
     }
 
     [HttpPost("sync")]
-    public async Task<ActionResult> TriggerSync()
+    public ActionResult TriggerSync()
     {
-        var account = await _accountRepo.GetAccountAsync();
-        if (account is null)
-            return BadRequest("No email account configured.");
+        if (!_syncOrchestrator.TryStartSync())
+            return Conflict(new { message = "Sync already in progress", status = _syncOrchestrator.GetStatus() });
 
-        _emailService.Configure(account);
+        return Accepted(new { message = "Sync started", status = _syncOrchestrator.GetStatus() });
+    }
 
-        var since = account.LastSyncDate ?? DateTime.UtcNow.AddDays(-548);
-        var emails = await _emailService.FetchEmailsSinceAsync(since);
-        await _processingService.ProcessEmailBatchAsync(emails);
-
-        account.LastSyncDate = DateTime.UtcNow;
-        await _accountRepo.CreateOrUpdateAsync(account);
-
-        return Ok(new { processed = emails.Count });
+    [HttpGet("sync/status")]
+    public ActionResult GetSyncStatus()
+    {
+        return Ok(_syncOrchestrator.GetStatus());
     }
 
     [HttpPatch("{id}/link")]

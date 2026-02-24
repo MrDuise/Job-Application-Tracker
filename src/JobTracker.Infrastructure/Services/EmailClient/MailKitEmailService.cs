@@ -114,25 +114,38 @@ public class MailKitEmailService : IEmailService, IDisposable
 
     private static SearchQuery BuildJobKeywordQuery()
     {
-        // Common terms found in job application emails — search both subject and body
-        string[] keywords =
+        // Subject-only search — fast on all IMAP servers.
+        // Do NOT use BodyContains here: IMAP body search forces the server to
+        // scan every email's full text, which hangs for 1+ hour on large mailboxes.
+        // Body-level classification is handled locally by the rule-based classifier.
+        string[] subjectKeywords =
         [
             "application", "interview", "position", "offer",
             "candidate", "resume", "hiring", "recruiter",
             "applied", "rejected", "opportunity", "job"
         ];
 
-        SearchQuery combined = SearchQuery.SubjectContains(keywords[0])
-            .Or(SearchQuery.BodyContains(keywords[0]));
+        // Known ATS / job platform sender domains — fast From-header search
+        string[] atsSenderDomains =
+        [
+            "@greenhouse.io", "@lever.co", "@myworkday.com",
+            "@icims.com", "@smartrecruiters.com", "@jobvite.com",
+            "@ashbyhq.com", "@breezy.hr", "@linkedin.com",
+            "@indeed.com", "@glassdoor.com"
+        ];
 
-        for (var i = 1; i < keywords.Length; i++)
+        SearchQuery combined = SearchQuery.SubjectContains(subjectKeywords[0]);
+        for (var i = 1; i < subjectKeywords.Length; i++)
         {
-            combined = combined
-                .Or(SearchQuery.SubjectContains(keywords[i]))
-                .Or(SearchQuery.BodyContains(keywords[i]));
+            combined = combined.Or(SearchQuery.SubjectContains(subjectKeywords[i]));
         }
 
-        return combined!;
+        foreach (var domain in atsSenderDomains)
+        {
+            combined = combined.Or(SearchQuery.FromContains(domain));
+        }
+
+        return combined;
     }
 
     public async Task<Email?> GetEmailByIdAsync(string emailId)
