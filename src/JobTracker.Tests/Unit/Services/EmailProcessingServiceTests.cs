@@ -130,7 +130,7 @@ public class EmailProcessingServiceTests
     }
 
     [Fact]
-    public async Task ProcessEmailBatchAsync_ProcessesAllEmails()
+    public async Task ProcessNewEmailAsync_ProcessesMultipleEmails()
     {
         var emails = new List<Email>
         {
@@ -143,7 +143,8 @@ public class EmailProcessingServiceTests
         _mockLlmService.Setup(s => s.ClassifyEmailAsync(It.IsAny<string>()))
             .ReturnsAsync(new EmailClassificationResult { IsJobRelated = false });
 
-        await _service.ProcessEmailBatchAsync(emails);
+        foreach (var email in emails)
+            await _service.ProcessNewEmailAsync(email);
 
         _mockEmailRepo.Verify(r => r.CreateAsync(It.IsAny<Email>()), Times.Exactly(2));
     }

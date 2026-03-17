@@ -16,4 +16,5 @@ public interface IEmailRepository
     Task DeleteAsync(string id);
     Task<bool> ExistsAsync(string emailId);
     Task<List<Email>> GetEmailsSinceAsync(DateTime since);
+    Task<HashSet<string>> GetLinkedSenderDomainsAsync();
 }

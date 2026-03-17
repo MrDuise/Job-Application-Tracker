@@ -1,6 +1,6 @@
 using System.Net;
 using System.Text.RegularExpressions;
-using JobTracker.Core.Enums;
+using System.Threading.Channels;
 using JobTracker.Core.Interfaces.Services;
 using JobTracker.Core.Models;
 using MailKit;
@@ -17,6 +17,22 @@ public class MailKitEmailService : IEmailService, IDisposable
     private readonly ILogger<MailKitEmailService> _logger;
     private ImapClient? _client;
     private EmailAccount? _account;
+    private HashSet<string> _knownSenderDomains = new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly string[] AtsDomains =
+    [
+        "greenhouse.io", "lever.co", "myworkday.com",
+        "icims.com", "smartrecruiters.com", "jobvite.com",
+        "ashbyhq.com", "breezy.hr",
+        "indeed.com", "glassdoor.com"
+    ];
+
+    private static readonly string[] SubjectSignals =
+    [
+        "application", "interview", "applied", "offer",
+        "candidate", "rejected", "phone screen", "assessment",
+        "your candidacy", "offer letter", "onsite", "on-site"
+    ];
 
     public MailKitEmailService(ILogger<MailKitEmailService> logger)
     {
@@ -28,25 +44,22 @@ public class MailKitEmailService : IEmailService, IDisposable
         _account = account;
     }
 
+    public void SetKnownSenderDomains(HashSet<string> domains)
+    {
+        _knownSenderDomains = domains;
+    }
+
     public async Task ConnectAsync()
     {
         if (_account is null)
             throw new InvalidOperationException("Email account not configured. Call Configure() first.");
 
         _client = new ImapClient();
-        await _client.ConnectAsync(_account.ImapServer, _account.ImapPort, SecureSocketOptions.SslOnConnect);
+        await _client.ConnectAsync("imap.gmail.com", 993, SecureSocketOptions.SslOnConnect);
 
-        if (_account.AuthType == EmailAuthType.GoogleOAuth && !string.IsNullOrEmpty(_account.AccessToken))
-        {
-            var oauth2 = new SaslMechanismOAuth2(_account.EmailAddress, _account.AccessToken);
-            await _client.AuthenticateAsync(oauth2);
-            _logger.LogInformation("Connected to IMAP server {Server} using OAuth2", _account.ImapServer);
-        }
-        else
-        {
-            await _client.AuthenticateAsync(_account.Username, _account.EncryptedPassword);
-            _logger.LogInformation("Connected to IMAP server {Server}", _account.ImapServer);
-        }
+        var oauth2 = new SaslMechanismOAuth2(_account.EmailAddress, _account.AccessToken);
+        await _client.AuthenticateAsync(oauth2);
+        _logger.LogInformation("Connected to Gmail via OAuth2 for {Email}", _account.EmailAddress);
     }
 
     public async Task DisconnectAsync()
@@ -54,156 +67,136 @@ public class MailKitEmailService : IEmailService, IDisposable
         if (_client is { IsConnected: true })
         {
             await _client.DisconnectAsync(true);
-            _logger.LogInformation("Disconnected from IMAP server");
+            _logger.LogInformation("Disconnected from Gmail");
         }
     }
 
-    public async Task<bool> TestConnectionAsync(EmailAccount account)
-    {
-        try
-        {
-            using var client = new ImapClient();
-            await client.ConnectAsync(account.ImapServer, account.ImapPort, SecureSocketOptions.SslOnConnect);
-
-            if (account.AuthType == EmailAuthType.GoogleOAuth && !string.IsNullOrEmpty(account.AccessToken))
-            {
-                var oauth2 = new SaslMechanismOAuth2(account.EmailAddress, account.AccessToken);
-                await client.AuthenticateAsync(oauth2);
-            }
-            else
-            {
-                await client.AuthenticateAsync(account.Username, account.EncryptedPassword);
-            }
-
-            await client.DisconnectAsync(true);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Email connection test failed for {Email}", account.EmailAddress);
-            return false;
-        }
-    }
-
-    public async Task<List<Email>> FetchEmailsSinceAsync(DateTime since)
+    public async Task FetchAndStreamEmailsAsync(
+        DateTime since,
+        ChannelWriter<Email> channel,
+        Action<int> onTotalKnown,
+        CancellationToken ct)
     {
         if (_client is null || !_client.IsConnected)
             await ConnectAsync();
 
         var inbox = _client!.Inbox;
-        await inbox.OpenAsync(FolderAccess.ReadOnly);
+        await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
 
-        // 5-minute timeout for the entire search + fetch operation
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        // Phase 1: Gmail search → UIDs
+        var rawQuery = BuildGmailRawQuery(since);
+        var query = SearchQuery.GMailRawSearch(rawQuery);
+        _logger.LogInformation("Gmail search: {Query}", rawQuery);
 
-        // Build search query — Gmail-native or standard IMAP
-        SearchQuery query;
-        if (IsGmail())
+        var uids = await inbox.SearchAsync(query, ct);
+        _logger.LogInformation("Gmail search matched {Count} UIDs", uids.Count);
+
+        if (uids.Count == 0)
         {
-            var rawQuery = BuildGmailRawQuery(since);
-            query = SearchQuery.GMailRawSearch(rawQuery);
-            _logger.LogInformation("Using Gmail native search (X-GM-RAW): {Query}", rawQuery);
-        }
-        else
-        {
-            var dateQuery = SearchQuery.DeliveredAfter(since);
-            var keywordQuery = BuildJobKeywordQuery();
-            query = dateQuery.And(keywordQuery);
-            _logger.LogInformation("Using standard IMAP search");
+            onTotalKnown(0);
+            return;
         }
 
-        IList<UniqueId> uids;
-        try
-        {
-            uids = await inbox.SearchAsync(query, cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            _logger.LogError(
-                "IMAP search timed out after 5 minutes. Server: {Server}, Since: {Since}",
-                _account!.ImapServer, since);
-            throw new TimeoutException(
-                $"IMAP search timed out after 5 minutes on {_account.ImapServer}.");
-        }
+        // Phase 2: Bulk header fetch (single IMAP round-trip)
+        var summaries = await inbox.FetchAsync(
+            uids,
+            MessageSummaryItems.Envelope | MessageSummaryItems.UniqueId,
+            ct);
 
-        _logger.LogInformation("IMAP search matched {Count} emails since {Since}", uids.Count, since);
+        // Phase 3: Header pre-filter
+        var passed = summaries.Where(PassesHeaderFilter).ToList();
+        _logger.LogInformation("Pre-filter passed {Passed}/{Total} emails", passed.Count, summaries.Count);
+        onTotalKnown(passed.Count);
 
-        var emails = new List<Email>();
-        foreach (var uid in uids)
+        // Phase 4: Download bodies for filtered set, stream to channel
+        foreach (var summary in passed)
         {
-            var message = await inbox.GetMessageAsync(uid, cts.Token);
-            emails.Add(ConvertToEmail(message, uid.ToString()));
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var message = await inbox.GetMessageAsync(summary.UniqueId, ct);
+                var email = ConvertToEmail(message, summary.UniqueId.ToString());
+                await channel.WriteAsync(email, ct);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to download email UID {Uid}, skipping", summary.UniqueId);
+            }
         }
-
-        _logger.LogInformation("Fetched {Count} emails since {Since}", emails.Count, since);
-        return emails;
     }
 
-    private bool IsGmail()
+    private bool PassesHeaderFilter(IMessageSummary summary)
     {
-        return _account?.ImapServer?.Contains("gmail.com", StringComparison.OrdinalIgnoreCase) == true;
+        var from = summary.Envelope.From?.ToString() ?? string.Empty;
+        var subject = summary.Envelope.Subject ?? string.Empty;
+
+        var domain = ExtractDomain(from);
+
+        // Known sender passthrough — company already in DB
+        if (domain is not null && _knownSenderDomains.Contains(domain))
+            return true;
+
+        // ATS domain match
+        if (domain is not null && AtsDomains.Any(ats => domain.EndsWith(ats, StringComparison.OrdinalIgnoreCase)))
+            return true;
+
+        // Subject signal match
+        var subjectLower = subject.ToLowerInvariant();
+        if (SubjectSignals.Any(signal => subjectLower.Contains(signal)))
+            return true;
+
+        return false;
+    }
+
+    private static string? ExtractDomain(string from)
+    {
+        var atIndex = from.LastIndexOf('@');
+        if (atIndex < 0) return null;
+
+        var rest = from[(atIndex + 1)..];
+        // Strip trailing '>' if present (e.g. "name <user@domain.com>")
+        var endIndex = rest.IndexOf('>');
+        if (endIndex >= 0)
+            rest = rest[..endIndex];
+
+        return rest.Trim().ToLowerInvariant();
     }
 
     private static string BuildGmailRawQuery(DateTime since)
     {
         var dateFilter = $"after:{since:yyyy/MM/dd}";
 
-        string[] keywords =
-        [
-            "application", "interview", "applied", "offer",
-            "candidate", "resume", "hiring", "recruiter",
-            "rejected", "opportunity", "job", "position"
-        ];
-
-        string[] atsDomains =
-        [
-            "@greenhouse.io", "@lever.co", "@myworkday.com",
-            "@icims.com", "@smartrecruiters.com", "@jobvite.com",
-            "@ashbyhq.com", "@breezy.hr", "@linkedin.com",
-            "@indeed.com", "@glassdoor.com"
-        ];
-
-        var keywordClauses = keywords.AsEnumerable();
-        var fromClauses = atsDomains.Select(d => $"from:{d}");
-        var allClauses = keywordClauses.Concat(fromClauses);
-
-        return $"{dateFilter} ({string.Join(" OR ", allClauses)})";
-    }
-
-    private static SearchQuery BuildJobKeywordQuery()
-    {
-        // Subject-only search — fast on all IMAP servers.
-        // Do NOT use BodyContains here: IMAP body search forces the server to
-        // scan every email's full text, which hangs for 1+ hour on large mailboxes.
-        // Body-level classification is handled locally by the rule-based classifier.
-        string[] subjectKeywords =
-        [
-            "application", "interview", "position", "offer",
-            "candidate", "resume", "hiring", "recruiter",
-            "applied", "rejected", "opportunity", "job"
-        ];
-
-        // Known ATS / job platform sender domains — fast From-header search
-        string[] atsSenderDomains =
-        [
-            "@greenhouse.io", "@lever.co", "@myworkday.com",
-            "@icims.com", "@smartrecruiters.com", "@jobvite.com",
-            "@ashbyhq.com", "@breezy.hr", "@linkedin.com",
-            "@indeed.com", "@glassdoor.com"
-        ];
-
-        SearchQuery combined = SearchQuery.SubjectContains(subjectKeywords[0]);
-        for (var i = 1; i < subjectKeywords.Length; i++)
+        var clauses = new[]
         {
-            combined = combined.Or(SearchQuery.SubjectContains(subjectKeywords[i]));
-        }
+            "\"your application\"",
+            "\"thank you for applying\"",
+            "\"application received\"",
+            "\"application submitted\"",
+            "\"we received your application\"",
+            "\"interview scheduled\"",
+            "\"interview invitation\"",
+            "\"phone screen\"",
+            "\"moved forward with other\"",
+            "\"offer letter\"",
+            "\"pleased to offer\"",
+            "\"you applied for\"",
+            "\"technical assessment\"",
+            "applied",
+            "rejected",
+            "from:@greenhouse.io",
+            "from:@lever.co",
+            "from:@myworkday.com",
+            "from:@icims.com",
+            "from:@smartrecruiters.com",
+            "from:@jobvite.com",
+            "from:@ashbyhq.com",
+            "from:@breezy.hr",
+            "from:@indeed.com",
+            "from:@glassdoor.com"
+        };
 
-        foreach (var domain in atsSenderDomains)
-        {
-            combined = combined.Or(SearchQuery.FromContains(domain));
-        }
-
-        return combined;
+        return $"{dateFilter} ({string.Join(" OR ", clauses)})";
     }
 
     public async Task<Email?> GetEmailByIdAsync(string emailId)
@@ -267,15 +260,10 @@ public class MailKitEmailService : IEmailService, IDisposable
 
     private static string StripHtml(string html)
     {
-        // Remove style and script blocks entirely
         var cleaned = Regex.Replace(html, @"<(style|script)[^>]*>[\s\S]*?</\1>", " ", RegexOptions.IgnoreCase);
-        // Replace block-level tags with newlines for readability
         cleaned = Regex.Replace(cleaned, @"<(br|p|div|tr|li|h[1-6])[^>]*>", "\n", RegexOptions.IgnoreCase);
-        // Remove all remaining HTML tags
         cleaned = Regex.Replace(cleaned, @"<[^>]+>", " ");
-        // Decode HTML entities
         cleaned = WebUtility.HtmlDecode(cleaned);
-        // Collapse whitespace
         cleaned = Regex.Replace(cleaned, @"[ \t]+", " ");
         cleaned = Regex.Replace(cleaned, @"\n{3,}", "\n\n");
         return cleaned.Trim();

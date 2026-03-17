@@ -1,4 +1,3 @@
-using JobTracker.Core.DTOs;
 using JobTracker.Core.Interfaces.Services;
 using Microsoft.AspNetCore.Mvc;
 
@@ -25,19 +24,8 @@ public class EmailAccountsController : ControllerBase
         return Ok(new
         {
             account.EmailAddress,
-            account.ImapServer,
-            account.ImapPort,
-            account.Username,
-            account.LastSyncDate,
-            AuthType = account.AuthType.ToString()
+            account.LastSyncDate
         });
-    }
-
-    [HttpPost]
-    public async Task<ActionResult> CreateOrUpdate([FromBody] EmailAccountDto dto)
-    {
-        await _accountService.CreateOrUpdateAccountAsync(dto);
-        return Ok();
     }
 
     [HttpDelete]
@@ -45,12 +33,5 @@ public class EmailAccountsController : ControllerBase
     {
         await _accountService.DeleteAccountAsync();
         return NoContent();
-    }
-
-    [HttpPost("test")]
-    public async Task<ActionResult> TestConnection([FromBody] EmailAccountDto dto)
-    {
-        var success = await _accountService.TestConnectionAsync(dto);
-        return Ok(new { success });
     }
 }

@@ -109,4 +109,31 @@ public class EmailRepository : IEmailRepository
             .OrderByDescending(e => e.ReceivedDate)
             .ToListAsync();
     }
+
+    public async Task<HashSet<string>> GetLinkedSenderDomainsAsync()
+    {
+        var fromAddresses = await _context.Emails
+            .Where(e => e.ApplicationId != null)
+            .Select(e => e.From)
+            .Distinct()
+            .ToListAsync();
+
+        var domains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var from in fromAddresses)
+        {
+            var atIndex = from.LastIndexOf('@');
+            if (atIndex < 0) continue;
+
+            var rest = from[(atIndex + 1)..];
+            var endIndex = rest.IndexOf('>');
+            if (endIndex >= 0)
+                rest = rest[..endIndex];
+
+            var domain = rest.Trim().ToLowerInvariant();
+            if (!string.IsNullOrEmpty(domain))
+                domains.Add(domain);
+        }
+
+        return domains;
+    }
 }

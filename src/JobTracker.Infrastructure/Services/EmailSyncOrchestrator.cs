@@ -1,3 +1,4 @@
+using System.Threading.Channels;
 using JobTracker.Core.Interfaces.Repositories;
 using JobTracker.Core.Interfaces.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -7,7 +8,7 @@ namespace JobTracker.Infrastructure.Services;
 
 /// <summary>
 /// Manages email sync lifecycle: prevents overlapping syncs, tracks progress,
-/// and runs the heavy IMAP fetch + classification work off the HTTP request thread.
+/// and runs IMAP fetch + classification in parallel via producer-consumer.
 /// </summary>
 public class EmailSyncOrchestrator
 {
@@ -107,6 +108,7 @@ public class EmailSyncOrchestrator
         using var scope = _serviceProvider.CreateScope();
         var accountRepo = scope.ServiceProvider.GetRequiredService<IEmailAccountRepository>();
         var emailService = scope.ServiceProvider.GetRequiredService<IEmailService>();
+        var emailRepo = scope.ServiceProvider.GetRequiredService<IEmailRepository>();
         var processingService = scope.ServiceProvider.GetRequiredService<IEmailProcessingService>();
 
         var account = await accountRepo.GetAccountAsync();
@@ -118,57 +120,72 @@ public class EmailSyncOrchestrator
         }
 
         // Refresh OAuth token if needed
-        if (account.AuthType == Core.Enums.EmailAuthType.GoogleOAuth)
+        if (account.TokenExpiresAt.HasValue && account.TokenExpiresAt.Value <= DateTime.UtcNow.AddMinutes(2))
         {
-            if (account.TokenExpiresAt.HasValue && account.TokenExpiresAt.Value <= DateTime.UtcNow.AddMinutes(2))
+            var googleOAuth = scope.ServiceProvider.GetRequiredService<IGoogleOAuthService>();
+            if (!string.IsNullOrEmpty(account.EncryptedRefreshToken))
             {
-                var googleOAuth = scope.ServiceProvider.GetRequiredService<IGoogleOAuthService>();
-                if (!string.IsNullOrEmpty(account.EncryptedRefreshToken))
-                {
-                    account.AccessToken = await googleOAuth.RefreshAccessTokenAsync(account.EncryptedRefreshToken);
-                    account.TokenExpiresAt = DateTime.UtcNow.AddSeconds(3600);
-                    await accountRepo.CreateOrUpdateAsync(account);
-                    _logger.LogInformation("Refreshed Google OAuth access token");
-                }
-                else
-                {
-                    _status = "error";
-                    _lastError = "OAuth token expired and no refresh token available";
-                    return;
-                }
+                account.AccessToken = await googleOAuth.RefreshAccessTokenAsync(account.EncryptedRefreshToken);
+                account.TokenExpiresAt = DateTime.UtcNow.AddSeconds(3600);
+                await accountRepo.CreateOrUpdateAsync(account);
+                _logger.LogInformation("Refreshed Google OAuth access token");
+            }
+            else
+            {
+                _status = "error";
+                _lastError = "OAuth token expired and no refresh token available";
+                return;
             }
         }
 
         emailService.Configure(account);
 
-        // Fetch emails
+        // Load known sender domains from DB and wire to both services
+        var knownDomains = await emailRepo.GetLinkedSenderDomainsAsync();
+        emailService.SetKnownSenderDomains(knownDomains);
+        processingService.SetKnownSenderDomains(knownDomains);
+        _logger.LogInformation("Loaded {Count} known sender domains", knownDomains.Count);
+
+        // Set up producer-consumer pipeline
         _status = "fetching";
-        var since = account.LastSyncDate ?? DateTime.UtcNow.AddDays(-548);
-        _logger.LogInformation("Starting email fetch since {Since} from {Server}", since, account.ImapServer);
+        var since = account.LastSyncDate ?? DateTime.UtcNow.AddMonths(-8);
+        _logger.LogInformation("Starting email fetch since {Since}", since);
 
-        var emails = await emailService.FetchEmailsSinceAsync(since);
-        _totalEmails = emails.Count;
-        _logger.LogInformation("IMAP returned {Count} emails, starting classification", emails.Count);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
 
-        // Process in batches with progress updates
-        _status = "processing";
-        var skipped = 0;
-        var processed = 0;
+        var channel = Channel.CreateBounded<Core.Models.Email>(new BoundedChannelOptions(20)
+        {
+            SingleWriter = true,
+            SingleReader = true,
+            FullMode = BoundedChannelFullMode.Wait
+        });
+
         var errors = 0;
 
-        foreach (var email in emails)
+        // Producer: downloads bodies, writes to channel
+        var producerTask = Task.Run(async () =>
         {
             try
             {
-                if (IsObviousMarketing(email))
-                {
-                    skipped++;
-                }
-                else
-                {
-                    await processingService.ProcessNewEmailAsync(email);
-                    processed++;
-                }
+                await emailService.FetchAndStreamEmailsAsync(
+                    since,
+                    channel.Writer,
+                    total => _totalEmails = total,
+                    cts.Token);
+            }
+            finally
+            {
+                channel.Writer.Complete();
+            }
+        }, cts.Token);
+
+        // Consumer: reads from channel, processes each email
+        _status = "processing";
+        await foreach (var email in channel.Reader.ReadAllAsync(cts.Token))
+        {
+            try
+            {
+                await processingService.ProcessNewEmailAsync(email);
             }
             catch (Exception ex)
             {
@@ -181,10 +198,13 @@ public class EmailSyncOrchestrator
             if (_processedEmails % 50 == 0)
             {
                 _logger.LogInformation(
-                    "Progress: {Processed}/{Total} ({Skipped} marketing, {Errors} errors)",
-                    _processedEmails, _totalEmails, skipped, errors);
+                    "Progress: {Processed}/{Total} ({Errors} errors)",
+                    _processedEmails, _totalEmails, errors);
             }
         }
+
+        // Propagate any producer exceptions
+        await producerTask;
 
         // Update last sync date
         account.LastSyncDate = DateTime.UtcNow;
@@ -192,44 +212,8 @@ public class EmailSyncOrchestrator
 
         _status = "completed";
         _logger.LogInformation(
-            "Sync complete: {Processed} processed, {Skipped} marketing skipped, {Errors} errors out of {Total} total",
-            processed, skipped, errors, _totalEmails);
-    }
-
-    private static bool IsObviousMarketing(Core.Models.Email email)
-    {
-        var subject = email.Subject.ToLowerInvariant();
-        var from = email.From.ToLowerInvariant();
-        var body = email.Body.ToLowerInvariant();
-
-        string[] marketingSenders =
-        [
-            "marketing@", "newsletter@", "promotions@",
-            "deals@", "notifications@social", "info@linkedin.com"
-        ];
-        if (marketingSenders.Any(s => from.Contains(s)) && !HasJobKeyword(subject, body))
-            return true;
-
-        string[] marketingIndicators = ["unsubscribe", "view in browser", "email preferences", "opt out"];
-        var marketingScore = marketingIndicators.Count(ind => body.Contains(ind));
-        if (marketingScore >= 2 && !HasJobKeyword(subject, body))
-            return true;
-
-        return false;
-    }
-
-    private static bool HasJobKeyword(string subject, string body)
-    {
-        string[] jobKeywords =
-        [
-            "application", "interview", "position", "offer", "candidate",
-            "applied", "rejected", "opportunity", "role", "hiring",
-            "thank you for applying", "your application", "we received your",
-            "application received", "application submitted", "application confirmed",
-            "candidacy", "phone screen", "on-site", "onsite", "offer letter"
-        ];
-        var bodySnippet = body.Length > 500 ? body[..500] : body;
-        return jobKeywords.Any(k => subject.Contains(k) || bodySnippet.Contains(k));
+            "Sync complete: {Processed} processed, {Errors} errors out of {Total} total",
+            _processedEmails, errors, _totalEmails);
     }
 }
 

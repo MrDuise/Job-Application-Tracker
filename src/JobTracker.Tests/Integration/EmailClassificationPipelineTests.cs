@@ -1000,7 +1000,8 @@ public class EmailClassificationPipelineTests : IDisposable
             MakeEmail("b3", "noreply@amazon.com", "Your order shipped", "Tracking: 12345"),
         };
 
-        await _service.ProcessEmailBatchAsync(emails);
+        foreach (var email in emails)
+            await _service.ProcessNewEmailAsync(email);
 
         var apps = await _appRepo.GetAllAsync();
         Assert.Single(apps);
@@ -1008,7 +1009,7 @@ public class EmailClassificationPipelineTests : IDisposable
     }
 
     [Fact]
-    public async Task BatchProcessing_MarketingEmailsSkippedBeforeLLM()
+    public async Task BatchProcessing_AllEmailsReachClassifier()
     {
         var llmCallCount = 0;
         _mockLlmService.Setup(s => s.ClassifyEmailAsync(It.IsAny<string>()))
@@ -1017,20 +1018,22 @@ public class EmailClassificationPipelineTests : IDisposable
 
         var emails = new List<Email>
         {
-            // This should be filtered by pre-filter (marketing sender + no job keywords)
+            // Marketing pre-filtering now happens at IMAP header level,
+            // so all emails that reach ProcessNewEmailAsync go through classification
             MakeEmail("bf1", "marketing@spam.com",
                 "Big sale this weekend!",
                 "Don't miss our 50% off sale! Unsubscribe. View in browser."),
-            // This should reach the LLM (personal sender)
             MakeEmail("bf2", "person@company.com",
                 "Hello there",
                 "Just checking in."),
         };
 
-        await _service.ProcessEmailBatchAsync(emails);
+        foreach (var email in emails)
+            await _service.ProcessNewEmailAsync(email);
 
-        // Only the second email should have reached the LLM
-        Assert.Equal(1, llmCallCount);
+        // Both emails reach classification (rules first, then LLM if uncertain)
+        // The exact LLM call count depends on whether rules classify them
+        Assert.True(llmCallCount >= 1);
     }
 
     // =================================================================

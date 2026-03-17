@@ -10,10 +10,10 @@ using Xunit;
 namespace JobTracker.Tests.Integration;
 
 /// <summary>
-/// Tests for the marketing pre-filter in EmailProcessingService.
-/// The pre-filter runs BEFORE the LLM to avoid wasting Ollama calls on obvious
-/// marketing/newsletter emails. We test it via ProcessEmailBatchAsync, checking
-/// whether emails reach the LLM (mock gets called) or are skipped.
+/// Tests for the rule-based classifier + LLM pipeline in EmailProcessingService.
+/// Marketing pre-filtering now happens at the IMAP header level (MailKitEmailService).
+/// These tests verify that emails reaching the processing service are classified
+/// correctly — either by rules (no LLM call) or by LLM when rules are uncertain.
 /// </summary>
 public class MarketingEmailFilterTests
 {
@@ -57,7 +57,7 @@ public class MarketingEmailFilterTests
     private async Task<bool> EmailReachesLLM(Email email)
     {
         _llmCallCount = 0;
-        await _service.ProcessEmailBatchAsync(new List<Email> { email });
+        await _service.ProcessNewEmailAsync(email);
         return _llmCallCount > 0;
     }
 

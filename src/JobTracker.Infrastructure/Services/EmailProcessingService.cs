@@ -13,6 +13,7 @@ public class EmailProcessingService : IEmailProcessingService
     private readonly IApplicationRepository _applicationRepo;
     private readonly ILLMService _llmService;
     private readonly ILogger<EmailProcessingService> _logger;
+    private HashSet<string> _knownSenderDomains = new(StringComparer.OrdinalIgnoreCase);
 
     public EmailProcessingService(
         IEmailRepository emailRepo,
@@ -24,6 +25,11 @@ public class EmailProcessingService : IEmailProcessingService
         _applicationRepo = applicationRepo;
         _llmService = llmService;
         _logger = logger;
+    }
+
+    public void SetKnownSenderDomains(HashSet<string> domains)
+    {
+        _knownSenderDomains = domains;
     }
 
     public async Task ProcessNewEmailAsync(Email email)
@@ -38,91 +44,16 @@ public class EmailProcessingService : IEmailProcessingService
         await ClassifyAndLinkEmailAsync(email);
     }
 
-    public async Task ProcessEmailBatchAsync(List<Email> emails)
-    {
-        var skipped = 0;
-        var processed = 0;
-        var errors = 0;
-
-        foreach (var email in emails)
-        {
-            if (IsObviousMarketingEmail(email))
-            {
-                skipped++;
-                _logger.LogDebug("Skipping marketing email {EmailId}: {Subject}", email.Id, email.Subject);
-                continue;
-            }
-
-            try
-            {
-                await ProcessNewEmailAsync(email);
-                processed++;
-            }
-            catch (Exception ex)
-            {
-                errors++;
-                _logger.LogError(ex, "Failed to process email {EmailId}: {Subject}", email.Id, email.Subject);
-            }
-        }
-
-        _logger.LogInformation(
-            "Batch complete: {Processed} processed, {Skipped} marketing skipped, {Errors} errors out of {Total} total",
-            processed, skipped, errors, emails.Count);
-    }
-
-    private static bool IsObviousMarketingEmail(Email email)
-    {
-        var subject = email.Subject.ToLowerInvariant();
-        var from = email.From.ToLowerInvariant();
-        var body = email.Body.ToLowerInvariant();
-
-        // Skip emails from senders that are EXCLUSIVELY marketing.
-        // NOTE: noreply@ and no-reply@ are intentionally NOT here — nearly every ATS
-        // (Greenhouse, Lever, Workday, iCIMS, LinkedIn, Indeed) sends application
-        // confirmations from noreply addresses.
-        string[] marketingSenders =
-        [
-            "marketing@", "newsletter@", "promotions@",
-            "deals@", "notifications@social", "info@linkedin.com"
-        ];
-        if (marketingSenders.Any(s => from.Contains(s)) && !HasJobKeyword(subject, body))
-            return true;
-
-        // Skip if the body has strong marketing indicators and no job keywords anywhere
-        string[] marketingIndicators = ["unsubscribe", "view in browser", "email preferences", "opt out"];
-        var marketingScore = marketingIndicators.Count(ind => body.Contains(ind));
-        if (marketingScore >= 2 && !HasJobKeyword(subject, body))
-            return true;
-
-        return false;
-    }
-
-    private static bool HasJobKeyword(string subject, string body)
-    {
-        string[] jobKeywords =
-        [
-            "application", "interview", "position", "offer", "candidate",
-            "applied", "rejected", "opportunity", "role", "hiring",
-            "thank you for applying", "your application", "we received your",
-            "application received", "application submitted", "application confirmed",
-            "candidacy", "phone screen", "on-site", "onsite", "offer letter"
-        ];
-        // Check subject first (fast path), then first 500 chars of body
-        var bodySnippet = body.Length > 500 ? body[..500] : body;
-        return jobKeywords.Any(k => subject.Contains(k) || bodySnippet.Contains(k));
-    }
-
     public async Task ClassifyAndLinkEmailAsync(Email email)
     {
-        // 1. Thread detection first — if this email is part of a known thread,
-        //    link it immediately and check for status updates via rules (fast)
+        // 1. Thread detection — if this email is part of a known thread,
+        //    link it immediately and check for status updates via rules
         var application = await DetectApplicationFromEmailAsync(email);
         if (application is not null)
         {
             await _emailRepo.LinkToApplicationAsync(email.Id, application.Id);
             _logger.LogDebug("Email {EmailId} linked to application {AppId} via thread", email.Id, application.Id);
 
-            // Still check for status updates (rules are instant)
             var threadClassification = RuleBasedEmailClassifier.Classify(email);
             if (threadClassification?.Status is not null)
             {
@@ -136,15 +67,28 @@ public class EmailProcessingService : IEmailProcessingService
             return;
         }
 
-        // 2. Try rule-based classification (instant, no LLM call)
+        // 2. Check if sender is a known domain (company already in DB)
+        var isKnownSender = IsKnownSenderDomain(email.From);
+
+        // 3. Try rule-based classification (instant, no LLM call)
         var classification = RuleBasedEmailClassifier.Classify(email);
 
-        // 3. Fall back to LLM only if rules are uncertain
+        // 4. Decide whether to call LLM
         if (classification is null)
         {
+            // Rules uncertain → LLM decides
             var emailContent = $"Subject: {email.Subject}\nFrom: {email.From}\nBody: {email.Body}";
             classification = await _llmService.ClassifyEmailAsync(emailContent);
             _logger.LogDebug("Email {EmailId} classified by LLM: job={IsJobRelated}", email.Id, classification.IsJobRelated);
+        }
+        else if (isKnownSender && !classification.IsJobRelated)
+        {
+            // Rules say not job-related, but sender is known → LLM gets final say
+            var emailContent = $"Subject: {email.Subject}\nFrom: {email.From}\nBody: {email.Body}";
+            var llmResult = await _llmService.ClassifyEmailAsync(emailContent);
+            _logger.LogDebug("Email {EmailId} known sender override: rules said skip, LLM says job={IsJobRelated}",
+                email.Id, llmResult.IsJobRelated);
+            classification = llmResult;
         }
         else
         {
@@ -161,7 +105,6 @@ public class EmailProcessingService : IEmailProcessingService
         // If classified as job-related but no company name, skip
         if (classification.CompanyName is null)
         {
-            // Try to find an existing application by company name match
             application = null;
         }
         else
@@ -196,6 +139,19 @@ public class EmailProcessingService : IEmailProcessingService
                 _logger.LogInformation("Updated application {AppId} status to {Status}", application.Id, newStatus.Value);
             }
         }
+    }
+
+    private bool IsKnownSenderDomain(string from)
+    {
+        var atIndex = from.LastIndexOf('@');
+        if (atIndex < 0) return false;
+
+        var rest = from[(atIndex + 1)..];
+        var endIndex = rest.IndexOf('>');
+        if (endIndex >= 0)
+            rest = rest[..endIndex];
+
+        return _knownSenderDomains.Contains(rest.Trim());
     }
 
     public async Task<Application?> DetectApplicationFromEmailAsync(Email email)
